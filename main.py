@@ -1,4 +1,12 @@
-# main.py
+# main.py — MegaGrok Graphics Bot (Render Background Worker)
+# ------------------------------------------------------------
+# Features:
+# - Async PTB20 Telegram bot running in separate thread
+# - APScheduler auto-poster (every X hours)
+# - Flask root endpoint for Render health checks
+# - Modular command loading (handlers/commands.py)
+# - Stability/OpenAI image generation handled by handlers/posting.py
+# ------------------------------------------------------------
 
 import os
 import threading
@@ -9,27 +17,27 @@ from datetime import datetime
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Telegram (PTB v20 async)
+# Telegram async app builder (PTB v20+)
 from telegram.ext import ApplicationBuilder
 
-# Local modules
+# Local handlers
 from handlers.commands import get_handlers
 from handlers.posting import generate_and_post
 
 
 # -------------------------------------------------
-# Environment & Config
+# Environment Variables
 # -------------------------------------------------
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POST_INTERVAL_HOURS = float(os.getenv("POST_INTERVAL_HOURS", "2"))
 
 if not BOT_TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
+    raise RuntimeError("❌ Missing TELEGRAM_BOT_TOKEN")
 
-if not TELEGRAM_CHAT_ID:
-    raise RuntimeError("Missing TELEGRAM_CHAT_ID")
+if not CHAT_ID:
+    raise RuntimeError("❌ Missing TELEGRAM_CHAT_ID")
 
 
 # -------------------------------------------------
@@ -40,11 +48,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
-logger = logging.getLogger("megagrok-main")
+log = logging.getLogger("megagrok-main")
 
 
 # -------------------------------------------------
-# Flask App
+# Flask App (Render health endpoint)
 # -------------------------------------------------
 
 app = Flask("megagrok_graphics_bot")
@@ -53,91 +61,93 @@ app = Flask("megagrok_graphics_bot")
 def index():
     return jsonify({
         "status": "ok",
-        "service": "megagrok_graphics_bot",
+        "service": "MegaGrok Graphics Bot",
         "time": datetime.utcnow().isoformat() + "Z"
     })
 
 
 # -------------------------------------------------
-# Scheduler Job
+# APScheduler Auto Poster
 # -------------------------------------------------
 
 def scheduler_job():
-    logger.info("Running scheduled MegaGrok poster job...")
-    ok, info = generate_and_post(TELEGRAM_CHAT_ID, POST_INTERVAL_HOURS)
+    """Run one scheduled poster generation + Telegram post."""
+    log.info("🪄 Running scheduled MegaGrok poster...")
+    ok, info = generate_and_post(CHAT_ID, POST_INTERVAL_HOURS)
 
     if ok:
-        logger.info(f"Scheduled poster posted: {info}")
+        log.info(f"✅ Posted successfully: {info}")
     else:
-        logger.error(f"Scheduled poster FAILED: {info}")
+        log.error(f"❌ Failed: {info}")
 
 
 def start_scheduler():
-    scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(scheduler_job, "interval", hours=POST_INTERVAL_HOURS)
-    scheduler.start()
+    """Start the repeating scheduler in a background thread."""
+    sched = BackgroundScheduler(timezone="UTC")
+    sched.add_job(scheduler_job, "interval", hours=POST_INTERVAL_HOURS)
 
-    logger.info(f"Scheduler started | Interval: {POST_INTERVAL_HOURS}h")
+    sched.start()
+    log.info(f"⏱ Scheduler started (every {POST_INTERVAL_HOURS} hours)")
 
-    # Run one job immediately
+    # Initial poster on startup
     try:
         scheduler_job()
     except Exception as e:
-        logger.exception(f"Initial scheduled job failed: {e}")
+        log.exception(f"⚠ Initial scheduled job failed: {e}")
 
 
 # -------------------------------------------------
-# Telegram Bot: Async PTB20 in background thread
+# Telegram Async Bot Thread
 # -------------------------------------------------
 
 async def run_telegram_async():
-    logger.info("Initializing Telegram bot...")
+    """Run PTB telegram polling inside asyncio."""
+    log.info("🤖 Initializing Telegram bot...")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Load commands dynamically
     for handler in get_handlers():
-        application.add_handler(handler)
+        app.add_handler(handler)
 
-    logger.info("Starting Telegram polling...")
-    await application.run_polling()
+    log.info("📡 Starting Telegram polling...")
+    await app.run_polling(drop_pending_updates=True)
 
 
 def start_telegram_thread():
-    def _run():
+    """Launch Telegram polling in a dedicated thread."""
+    def runner():
         asyncio.run(run_telegram_async())
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target=runner, daemon=True)
     t.start()
-    logger.info("Telegram background thread started.")
+    log.info("🧵 Telegram polling thread started.")
 
 
 # -------------------------------------------------
-# START BACKGROUND SERVICES IMMEDIATELY ON IMPORT
+# START ALL BACKGROUND SERVICES NOW
 # -------------------------------------------------
 
 def start_background_services():
-    logger.info("Starting background services (scheduler + Telegram bot)...")
+    log.info("🚀 Starting MegaGrok Graphics Bot background services...")
 
-    # Start scheduler
+    # Scheduler thread
     threading.Thread(target=start_scheduler, daemon=True).start()
 
-    # Start Telegram bot
+    # Telegram thread
     start_telegram_thread()
 
 
-# IMPORTANT: Start services NOW (Gunicorn imports main.py once per worker)
+# IMPORTANT:
+# Gunicorn imports this file exactly once on startup — so we must start services NOW.
 start_background_services()
 
 
 # -------------------------------------------------
-# Local Development Mode
+# Local debug mode (not used on Render)
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    # Start scheduler
-    threading.Thread(target=start_scheduler, daemon=True).start()
-
-    # Start Telegram bot
+    start_scheduler()
     start_telegram_thread()
-
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
