@@ -1,36 +1,35 @@
-# main.py — MegaGrok Graphics Bot (Webhook Mode for Render)
+# main.py — MegaGrok Graphics Bot (Webhook Mode — Event Loop Safe)
 # ------------------------------------------------------------
-# Features:
-#  - Telegram webhook (PTB20 async)
-#  - Flask server for webhook + health
-#  - APScheduler auto-poster
-#  - Stability AI image generation
-#  - Modular handlers
+# This version FIXES:
+#  - "no running event loop"
+#  - "coroutine was never awaited"
+#  - PTB20 async startup running before loop exists
+#  - webhook registration in wrong context
 # ------------------------------------------------------------
 
 import os
 import logging
+import asyncio
 import threading
 from datetime import datetime
-
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder
+from telegram.ext import ApplicationBuilder
 
 from handlers.commands import get_handlers
 from handlers.posting import generate_and_post
 
 
 # ============================================================
-# ENVIRONMENT VARIABLES
+# ENV
 # ============================================================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")     # e.g., https://megagrokgraphics.onrender.com
 POST_INTERVAL_HOURS = float(os.getenv("POST_INTERVAL_HOURS", "2"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://megagrokgraphics.onrender.com
 
 if not BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
@@ -44,20 +43,59 @@ if not WEBHOOK_URL:
 # LOGGING
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("megagrok-main")
 
 
 # ============================================================
-# FLASK APP (Webhook Receiver + Health Check)
+# GLOBAL EVENT LOOP + PTB APP (created but NOT started yet)
 # ============================================================
 
-app = Flask("megagrok_graphics_bot")
+bot_loop = asyncio.new_event_loop()
 
-@app.get("/")
+async def build_application():
+    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # load handlers
+    for h in get_handlers():
+        app_tg.add_handler(h)
+
+    return app_tg
+
+# Build PTB app INSIDE the event loop
+app_tg = bot_loop.run_until_complete(build_application())
+
+
+# ============================================================
+# START TELEGRAM BOT IN DEDICATED LOOP THREAD
+# ============================================================
+
+def telegram_loop_thread():
+    asyncio.set_event_loop(bot_loop)
+    log.info("📡 Telegram event loop started.")
+
+    # Set webhook asynchronously
+    async def _init_webhook():
+        url = f"{WEBHOOK_URL}/webhook"
+        log.info(f"🔗 Setting webhook: {url}")
+        await app_tg.bot.set_webhook(url=url)
+
+    bot_loop.create_task(_init_webhook())
+
+    # Start PTB webhook processing
+    bot_loop.run_forever()
+
+
+threading.Thread(target=telegram_loop_thread, daemon=True).start()
+
+
+# ============================================================
+# FLASK APP (handles webhook)
+# ============================================================
+
+flask_app = Flask("megagrok_graphics_bot")
+
+@flask_app.get("/")
 def index():
     return jsonify({
         "status": "ok",
@@ -66,45 +104,23 @@ def index():
     })
 
 
-# ============================================================
-# TELEGRAM PTB v20 APPLICATION
-# ============================================================
-
-app_tg: Application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# Register command handlers
-for handler in get_handlers():
-    app_tg.add_handler(handler)
-
-
-# ============================================================
-# TELEGRAM WEBHOOK ENDPOINT
-# ============================================================
-
-@app.post("/webhook")
+@flask_app.post("/webhook")
 def telegram_webhook():
-    """Telegram sends updates here."""
+    """Receive Telegram webhook update and process inside bot loop."""
     data = request.get_json(force=True)
+
     update = Update.de_json(data, app_tg.bot)
 
-    # Schedule async update processing
-    app_tg.create_task(app_tg.process_update(update))
+    # Schedule async execution inside Telegram event loop
+    bot_loop.call_soon_threadsafe(
+        lambda: bot_loop.create_task(app_tg.process_update(update))
+    )
+
     return "OK", 200
 
 
 # ============================================================
-# WEBHOOK REGISTRATION (async)
-# ============================================================
-
-async def set_webhook_async():
-    """Register webhook URL with Telegram (async-safe)."""
-    webhook = f"{WEBHOOK_URL}/webhook"
-    log.info(f"🔗 Setting webhook → {webhook}")
-    await app_tg.bot.set_webhook(url=webhook)
-
-
-# ============================================================
-# SCHEDULER (AUTO-POSTER)
+# SCHEDULER
 # ============================================================
 
 def scheduler_job():
@@ -112,9 +128,11 @@ def scheduler_job():
     ok, info, img = generate_and_post(CHAT_ID, POST_INTERVAL_HOURS)
 
     if ok:
-        # Use PTB async bot inside scheduler thread safely
-        app_tg.create_task(
-            app_tg.bot.send_photo(chat_id=CHAT_ID, photo=img, caption=info)
+        # Schedule Telegram send in async loop
+        bot_loop.call_soon_threadsafe(
+            lambda: bot_loop.create_task(
+                app_tg.bot.send_photo(chat_id=CHAT_ID, photo=img, caption=info)
+            )
         )
         log.info(f"Posted: {info}")
     else:
@@ -122,40 +140,24 @@ def scheduler_job():
 
 
 def start_scheduler():
-    scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(scheduler_job, "interval", hours=POST_INTERVAL_HOURS)
-    scheduler.start()
+    sched = BackgroundScheduler(timezone="UTC")
+    sched.add_job(scheduler_job, "interval", hours=POST_INTERVAL_HOURS)
+    sched.start()
+    log.info(f"⏱ Scheduler started (interval: {POST_INTERVAL_HOURS}h)")
 
-    log.info(f"⏱ Scheduler started (every {POST_INTERVAL_HOURS}h)")
-
-    # Attempt initial run
+    # Initial run
     try:
         scheduler_job()
     except Exception as e:
-        log.exception(f"Initial scheduled job failed: {e}")
+        log.exception(f"Initial scheduler job failed: {e}")
+
+
+threading.Thread(target=start_scheduler, daemon=True).start()
 
 
 # ============================================================
-# STARTUP SEQUENCE
-# ============================================================
-
-def start_background_services():
-    log.info("🚀 MegaGrok Graphics Bot starting (WEBHOOK MODE)")
-
-    # Start scheduler thread
-    threading.Thread(target=start_scheduler, daemon=True).start()
-
-    # Register webhook async
-    app_tg.create_task(set_webhook_async())
-
-
-# Initialize immediately when gunicorn imports main.py
-start_background_services()
-
-
-# ============================================================
-# RUN FLASK SERVER (Gunicorn calls this automatically)
+# GUNICORN ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
