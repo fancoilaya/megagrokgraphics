@@ -1,41 +1,28 @@
 # services/openai_client.py
-import os
+
 import base64
-import time
-import openai
-import logging
+import os
+from openai import OpenAI
 
-logger = logging.getLogger(__name__)
+client = OpenAI()
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-IMAGE_SIZE = os.getenv("IMAGE_SIZE", "1024x1024")
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+IMAGE_SIZE = "1024x1024"
+
 
 def generate_megagrok_image(prompt: str) -> bytes:
-    """Synchronous call to OpenAI Images API. Returns raw bytes."""
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info("OpenAI image generation attempt %d", attempt)
-            resp = openai.Image.create(
-                prompt=prompt,
-                n=1,
-                size=IMAGE_SIZE
-            )
-            # handle dict or object
-            b64 = None
-            if isinstance(resp, dict):
-                b64 = resp["data"][0].get("b64_json")
-            else:
-                try:
-                    b64 = resp.data[0].b64_json
-                except Exception:
-                    b64 = None
-            if not b64:
-                raise RuntimeError("OpenAI returned no image data")
-            return base64.b64decode(b64)
-        except Exception as e:
-            logger.exception("OpenAI image generation failed on attempt %d: %s", attempt, e)
-            if attempt < MAX_RETRIES:
-                time.sleep(2 ** attempt)
-            else:
-                raise
+    """
+    Generates a MegaGrok poster image using the new OpenAI Images API (v1+).
+    Returns raw PNG bytes.
+    """
+
+    response = client.images.generate(
+        model="gpt-image-1",
+        prompt=prompt,
+        size=IMAGE_SIZE,
+        n=1,
+    )
+
+    # Extract base64 image data
+    b64_data = response.data[0].b64_json
+    return base64.b64decode(b64_data)
+
