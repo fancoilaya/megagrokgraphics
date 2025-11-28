@@ -1,37 +1,95 @@
 # handlers/posting.py
 import time
+import io
 import logging
-from handlers.mobs import pick_mob_for_post, get_mob_by_name
-from services.stability_client import generate_megagrok_image
-from services.telegram_client import tg_send_photo
-from style import PROMPT_TEMPLATE, MEGAGROK_STYLE
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("posting")
 
-def build_prompt(mob: dict, variant: bool = False) -> str:
-    mob_name = mob.get("name", "Unknown")
-    mob_desc = mob.get("desc", "")
+# Try stability first
+try:
+    from services.stability_client import generate_megagrok_image
+    BACKEND = "stability"
+except Exception:
+    BACKEND = None
+    generate_megagrok_image = None
+
+
+# Try mobs module
+try:
+    from handlers.mobs import pick_mob_for_post, get_mob_by_name
+except Exception:
+    def pick_mob_for_post(_):
+        return {
+            "id": "rugrat",
+            "name": "RugRat",
+            "desc": "tiny rodent-like liquidity gremlin with neon red accents, glowing eyes and cosmic glitch effects"
+        }, False
+
+    def get_mob_by_name(name: str):
+        return None
+
+
+# Try user style module
+try:
+    from style import PROMPT_TEMPLATE, MEGAGROK_STYLE
+except Exception:
+    MEGAGROK_STYLE = (
+        "MegaGrok Poster Style — neon cosmic palette, vibrant blues, purples, greens, "
+        "sharp cinematic highlights, holographic glow, dramatic rim lighting, heavy contrast, "
+        "clean outlines, slight grain texture, sci-fi crypto aesthetic, frog-metaverse themes."
+    )
+
+    PROMPT_TEMPLATE = (
+        "Poster of the creature.\n"
+        "Name: {mob_name}\n"
+        "Description: {mob_desc}\n\n"
+        "Style:\n{style}\n\n"
+        "Layout:\n"
+        "- MEGAGROK title at top\n"
+        "- Creature centered\n"
+        "- Name in framed bottom box\n"
+        "Vintage printed arcade poster style, bold outlines, dramatic composition."
+    )
+
+
+def build_prompt(mob: dict, variant: bool) -> str:
+    desc = mob["desc"]
     if variant:
-        mob_desc += " Slight variant: altered accent colors or a small prop."
-    prompt = PROMPT_TEMPLATE.format(mob_name=mob_name, mob_desc=mob_desc, style=MEGAGROK_STYLE)
-    return prompt
+        desc += " Variant version with alternate accent colors."
 
-def generate_and_post(chat_id: str, interval_hours: float = 2, mob_override: str = None):
-    """Synchronous function used by scheduler and by command handlers via asyncio.to_thread."""
+    return PROMPT_TEMPLATE.format(
+        mob_name=mob["name"],
+        mob_desc=desc,
+        style=MEGAGROK_STYLE
+    )
+
+
+def generate_and_post(chat_id: str, interval_hours=None, mob_override: str = None):
+    """Sync function called inside an executor by Telegram & scheduler."""
+    if BACKEND is None:
+        return False, "No backend found (set STABILITY_API_KEY)"
+
     try:
+        # Select mob (override or auto)
         if mob_override:
             mob = get_mob_by_name(mob_override)
             if not mob:
-                return False, f"Unknown mob '{mob_override}'"
+                mob = {"id": mob_override, "name": mob_override, "desc": mob_override}
             variant = False
         else:
-            mob, variant = pick_mob_for_post(interval_hours)
+            mob, variant = pick_mob_for_post(interval_hours or 2)
+
         prompt = build_prompt(mob, variant)
+
+        # Generate image from Stability
         img_bytes = generate_megagrok_image(prompt)
-        filename = f"{mob.get('id','mob')}_{int(time.time())}.png"
-        caption = f"{mob.get('name')} — MegaGrok Poster"
-        ok = tg_send_photo(chat_id, img_bytes, filename, caption)
-        return ok, mob.get("name")
+
+        from main import_TELEGRAM_SEND_FN  # injected by main.py
+        caption = f"{mob['name']} — MegaGrok Poster"
+
+        _TELEGRAM_SEND_FN(chat_id, img_bytes, caption)
+        return True, mob["name"]
+
     except Exception as e:
-        logger.exception("generate_and_post failed: %s", e)
+        logger.exception("Poster generation error: %s", e)
         return False, str(e)
