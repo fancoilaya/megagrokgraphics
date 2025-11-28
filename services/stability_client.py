@@ -2,55 +2,49 @@
 
 import os
 import base64
+import logging
 import requests
+
+log = logging.getLogger(__name__)
 
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 if not STABILITY_API_KEY:
-    raise RuntimeError("Missing STABILITY_API_KEY")
+    raise RuntimeError("STABILITY_API_KEY not set")
 
-API_URL = os.getenv(
-    "STABILITY_API_URL",
-    # Ultra model default endpoint
-    "https://api.stability.ai/v2beta/stable-image/generate/ultra"
-)
+STABILITY_URL = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
 
-HEADERS = {
-    "Authorization": f"Bearer {STABILITY_API_KEY}",
-    # MUST request an image type:
-    "Accept": "image/png",
-    # DO NOT set Content-Type manually (requests handles multipart properly)
-}
 
 def generate_megagrok_image(prompt: str) -> bytes:
     """
-    Stability Ultra — return raw PNG bytes.
+    Calls Stability SD3 API properly.
+    Returns raw PNG bytes.
     """
 
-    # Required form fields
-    data = {
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
         "prompt": prompt,
-        "aspect_ratio": "1:1",
-        "output_format": "png",
+        "output_format": "png",   # stability returns base64 png
+        "mode": "text-to-image",
+        "aspect_ratio": "1:1"
     }
 
-    # Ultra requires at least one valid "files" part for multipart,
-    # but you can send an empty placeholder.
-    files = {
-        "none": ("", b"", "application/octet-stream")
-    }
-
-    resp = requests.post(
-        API_URL,
-        headers=HEADERS,
-        data=data,
-        files=files,
-        timeout=120
-    )
+    resp = requests.post(STABILITY_URL, headers=headers, json=payload, timeout=60)
 
     if resp.status_code != 200:
         raise RuntimeError(
             f"Stability API error {resp.status_code}: {resp.text}"
         )
 
-    # Ultra endpoint returns raw PNG bytes directly (NOT JSON!)
-    return resp.content
+    try:
+        data = resp.json()
+        b64_img = data["image"]  # stability returns: {"image": "<base64>"}
+        return base64.b64decode(b64_img)
+
+    except Exception as e:
+        log.exception("Failed decoding Stability response")
+        raise RuntimeError(f"Invalid Stability response: {resp.text}")
