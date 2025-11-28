@@ -1,95 +1,79 @@
 # handlers/posting.py
-import time
+"""
+Poster generation + delivery logic for MegaGrok Graphics Bot.
+Called by:
+ - scheduler in main.py
+ - /grokposter command (handlers/grokposter.py)
+
+This returns raw image bytes ready for PTB20 send_photo().
+"""
+
 import io
 import logging
+from datetime import datetime
 
-logger = logging.getLogger("posting")
+from services.stability_client import generate_megagrok_image
 
-# Try stability first
-try:
-    from services.stability_client import generate_megagrok_image
-    BACKEND = "stability"
-except Exception:
-    BACKEND = None
-    generate_megagrok_image = None
+log = logging.getLogger("posting")
 
 
-# Try mobs module
-try:
-    from handlers.mobs import pick_mob_for_post, get_mob_by_name
-except Exception:
-    def pick_mob_for_post(_):
-        return {
-            "id": "rugrat",
-            "name": "RugRat",
-            "desc": "tiny rodent-like liquidity gremlin with neon red accents, glowing eyes and cosmic glitch effects"
-        }, False
+# ---------------------------------------------------------
+# MegaGrok Style Prompt (baseline style applied to all)
+# ---------------------------------------------------------
 
-    def get_mob_by_name(name: str):
-        return None
-
-
-# Try user style module
-try:
-    from style import PROMPT_TEMPLATE, MEGAGROK_STYLE
-except Exception:
-    MEGAGROK_STYLE = (
-        "MegaGrok Poster Style — neon cosmic palette, vibrant blues, purples, greens, "
-        "sharp cinematic highlights, holographic glow, dramatic rim lighting, heavy contrast, "
-        "clean outlines, slight grain texture, sci-fi crypto aesthetic, frog-metaverse themes."
-    )
-
-    PROMPT_TEMPLATE = (
-        "Poster of the creature.\n"
-        "Name: {mob_name}\n"
-        "Description: {mob_desc}\n\n"
-        "Style:\n{style}\n\n"
-        "Layout:\n"
-        "- MEGAGROK title at top\n"
-        "- Creature centered\n"
-        "- Name in framed bottom box\n"
-        "Vintage printed arcade poster style, bold outlines, dramatic composition."
-    )
+MEGAGROK_BASE_STYLE = """
+MegaGrok Metaverse Poster Style:
+- Neon cosmic palette (purple, green, blue)
+- Sharp cinematic lighting with rim highlights
+- Sci-fi crypto-fantasy aesthetic
+- Clean outlines, holographic glow
+- Slight grain texture like cosmic film
+- Dramatic energy swirls in background
+- Frog-metaverse themed visual identity
+- Square or portrait poster format
+"""
 
 
-def build_prompt(mob: dict, variant: bool) -> str:
-    desc = mob["desc"]
-    if variant:
-        desc += " Variant version with alternate accent colors."
+# ---------------------------------------------------------
+# Generate Image + Prepare for Sending
+# ---------------------------------------------------------
 
-    return PROMPT_TEMPLATE.format(
-        mob_name=mob["name"],
-        mob_desc=desc,
-        style=MEGAGROK_STYLE
-    )
+def generate_and_post(chat_id: str, interval_hours: float):
+    """
+    Generates a MegaGrok poster and returns:
+    (True, info_string, image_bytes) on success
+    (False, error_message, None) on failure
+    """
+    log.info(f"🎨 Generating MegaGrok poster for chat {chat_id}...")
 
+    # You can extend this system to pick mobs, seasonal styles, etc.
+    prompt = f"""
+    {MEGAGROK_BASE_STYLE}
 
-def generate_and_post(chat_id: str, interval_hours=None, mob_override: str = None):
-    """Sync function called inside an executor by Telegram & scheduler."""
-    if BACKEND is None:
-        return False, "No backend found (set STABILITY_API_KEY)"
+    Create a new random MegaGrok Metaverse poster.
+    Must feel like part of the same universe as previous posters.
+    Include cosmic energy, neon motion, and high drama.
+    Poster must be visually striking and match metaverse canon.
+
+    Timestamp: {datetime.utcnow().isoformat()}Z
+    """
 
     try:
-        # Select mob (override or auto)
-        if mob_override:
-            mob = get_mob_by_name(mob_override)
-            if not mob:
-                mob = {"id": mob_override, "name": mob_override, "desc": mob_override}
-            variant = False
-        else:
-            mob, variant = pick_mob_for_post(interval_hours or 2)
-
-        prompt = build_prompt(mob, variant)
-
-        # Generate image from Stability
+        # Returns raw bytes from Stability client
         img_bytes = generate_megagrok_image(prompt)
 
-        from main import_TELEGRAM_SEND_FN  # injected by main.py
-        caption = f"{mob['name']} — MegaGrok Poster"
+        if not img_bytes:
+            log.error("No image bytes returned from generator.")
+            return False, "Image generator returned no data."
 
-        _TELEGRAM_SEND_FN(chat_id, img_bytes, caption)
-        return True, mob["name"]
+        # Convert to BytesIO for Telegram
+        bio = io.BytesIO(img_bytes)
+        bio.name = "megagrok_poster.png"
+
+        info = f"Poster created at {datetime.utcnow().isoformat()}Z"
+        return True, info, bio
 
     except Exception as e:
-        logger.exception("Poster generation error: %s", e)
-        return False, str(e)
+        error_msg = f"Poster generation failed: {e}"
+        log.exception(error_msg)
+        return False, error_msg, None
