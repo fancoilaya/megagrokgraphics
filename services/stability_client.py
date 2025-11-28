@@ -1,4 +1,8 @@
 # services/stability_client.py
+"""
+Stability AI Image Generator for MegaGrok Metaverse Posters.
+Returns raw PNG bytes ready for BytesIO.
+"""
 
 import os
 import base64
@@ -7,36 +11,50 @@ import requests
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 
 if not STABILITY_API_KEY:
-    raise RuntimeError("Missing STABILITY_API_KEY")
+    raise RuntimeError("❌ Missing STABILITY_API_KEY environment variable")
 
-API_URL = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
+
+# ---------------------------------------------------------
+# Settings
+# ---------------------------------------------------------
+
+STABILITY_URL = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
 
 HEADERS = {
     "Authorization": f"Bearer {STABILITY_API_KEY}",
-    "Accept": "application/json",
-    "Content-Type": "application/json",
+    "Accept": "application/json"
 }
+
 
 def generate_megagrok_image(prompt: str) -> bytes:
     """
-    Generates a 1:1 poster-style image using Stability AI SD3.
-    Returns raw PNG bytes.
+    Sends prompt to Stability Ultra and returns raw PNG bytes.
     """
 
-    payload = {
+    data = {
         "prompt": prompt,
-        "aspect_ratio": "1:1",
-        "output_format": "png"
+        "output_format": "png",
+        "aspect_ratio": "1:1",           # good for posters
+        "model": "stable-image-ultra",   # ultra-quality model
     }
 
-    response = requests.post(API_URL, headers=HEADERS, json=payload)
+    response = requests.post(
+        STABILITY_URL,
+        headers=HEADERS,
+        files={"none": ""},
+        data=data,
+        timeout=120,
+    )
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"Stability API error {response.status_code}: {response.text}"
+            f"Stability API Error {response.status_code}: {response.text}"
         )
 
-    data = response.json()
-    b64_image = data["image"]
+    payload = response.json()
 
-    return base64.b64decode(b64_image)
+    if "image" not in payload:
+        raise RuntimeError("Stability API returned no image data")
+
+    # The image is base64-encoded PNG → decode to raw bytes
+    return base64.b64decode(payload["image"])
