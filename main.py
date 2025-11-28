@@ -80,7 +80,7 @@ def start_scheduler():
 
     logger.info(f"Scheduler started | Interval: {POST_INTERVAL_HOURS}h")
 
-    # Run immediately on boot
+    # Run one job immediately
     try:
         scheduler_job()
     except Exception as e:
@@ -97,7 +97,6 @@ async def run_telegram_async():
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register handlers
     for handler in get_handlers():
         application.add_handler(handler)
 
@@ -106,8 +105,6 @@ async def run_telegram_async():
 
 
 def start_telegram_thread():
-    """Launches PTB20 asyncio loop inside a background thread."""
-
     def _run():
         asyncio.run(run_telegram_async())
 
@@ -118,17 +115,17 @@ def start_telegram_thread():
 
 
 # -------------------------------------------------
-# Gunicorn-Compatible Initialization (Flask 3.x)
+# Flask 3.x / Gunicorn Startup Hook
 # -------------------------------------------------
 
-@app.before_serving
+@app.before_app_serving
 def init_services():
     """
-    Flask 3.x replacement for before_first_request.
+    Correct startup hook for Flask 3.x.
     Runs once per Gunicorn worker.
     """
 
-    logger.info("Flask worker is starting background services...")
+    logger.info("Flask worker starting services (scheduler + Telegram bot)...")
 
     # Start scheduler in background
     threading.Thread(target=start_scheduler, daemon=True).start()
@@ -136,19 +133,15 @@ def init_services():
     # Start Telegram bot in background
     start_telegram_thread()
 
-    logger.info("All background services started successfully.")
+    logger.info("Background services started successfully.")
 
 
 # -------------------------------------------------
-# Local Development Mode (python main.py)
+# Local Dev Mode
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    # Start scheduler
     threading.Thread(target=start_scheduler, daemon=True).start()
-
-    # Start Telegram bot
     start_telegram_thread()
 
-    # Start Flask dev server
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
