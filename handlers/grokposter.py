@@ -1,44 +1,32 @@
 # handlers/grokposter.py
-import logging
-from telegram import Update
+"""
+Async PTB20 command handler for /grokposter
+Generates a MegaGrok poster on demand using Stability AI.
+"""
+
 from telegram.ext import CommandHandler, ContextTypes
+from telegram import Update
 
 from handlers.posting import generate_and_post
 
-logger = logging.getLogger("grokposter")
 
-
-async def grokposter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User command: /grokposter [optional_mob_name]"""
+async def grokposter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # Extract mob name override, if provided
-    mob_override = None
-    if context.args:
-        mob_override = " ".join(context.args).strip()
+    await update.message.reply_text("⚡ MegaForge Prime Engine is generating your MegaGrok poster...")
 
-    await context.bot.send_message(
-        chat_id,
-        "⚙️ MegaForge Prime Engine: generating your MegaGrok poster..."
-    )
+    ok, info, img_bytes = generate_and_post(chat_id, 0)
 
-    # Call your existing function (sync), but inside executor
-    try:
-        ok, info = await context.application.run_in_executor(
-            None,
-            lambda: generate_and_post(chat_id, interval_hours=None, mob_override=mob_override)
+    if ok:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=img_bytes,
+            caption=f"✅ Poster generated!\n{info}"
         )
-
-        if not ok:
-            await context.bot.send_message(
-                chat_id,
-                f"❌ Poster generation failed: {info}"
-            )
-    except Exception as e:
-        logger.exception("Unhandled error in /grokposter: %s", e)
-        await context.bot.send_message(chat_id, f"❌ Unexpected error: {e}")
+    else:
+        await update.message.reply_text(f"❌ Poster generation failed:\n{info}")
 
 
 def get_handler():
-    """Returned in handlers.commands.get_handlers()"""
-    return CommandHandler("grokposter", grokposter)
+    """Required by handlers/commands.py to register this module."""
+    return CommandHandler("grokposter", grokposter_cmd)
