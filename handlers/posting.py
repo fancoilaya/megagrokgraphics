@@ -2,7 +2,7 @@
 import time
 import logging
 from handlers.mobs import pick_mob_for_post, get_mob_by_name
-from services.openai_client import generate_megagrok_image
+from services.stability_client import generate_megagrok_image
 from services.telegram_client import tg_send_photo
 from style import PROMPT_TEMPLATE, MEGAGROK_STYLE
 
