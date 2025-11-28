@@ -1,21 +1,29 @@
-from telegram.ext import CommandHandler
+# handlers/commands.py
+import asyncio
+import logging
+from telegram import Update
+from telegram.ext import CommandHandler, ContextTypes
+
 from handlers.posting import generate_and_post
 
-def grokposter(update, context):
+logger = logging.getLogger(__name__)
+
+async def grokposter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
-    mob = args[0] if args else None
+    mob_override = args[0] if args else None
 
-    update.message.reply_text("Generating MegaGrok poster…")
+    await update.message.reply_text("Generating MegaGrok poster... this may take a few seconds.")
 
-    ok, info = generate_and_post(chat_id, mob_override=mob)
+    # run blocking generation in a thread
+    ok, info = await asyncio.to_thread(generate_and_post, chat_id, None, mob_override)
 
     if ok:
-        update.message.reply_text(f"✔️ Posted {info}")
+        await update.message.reply_text(f"Done — Posted: {info}")
     else:
-        update.message.reply_text(f"❌ Error: {info}")
+        await update.message.reply_text(f"Error generating poster: {info}")
 
 def get_handlers():
     return [
-        CommandHandler("Grokposter", grokposter, pass_args=True),
+        CommandHandler("Grokposter", grokposter)
     ]
