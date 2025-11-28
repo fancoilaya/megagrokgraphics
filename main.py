@@ -44,11 +44,10 @@ logger = logging.getLogger("megagrok-main")
 
 
 # -------------------------------------------------
-# Flask App (Render requires HTTP server)
+# Flask App
 # -------------------------------------------------
 
 app = Flask("megagrok_graphics_bot")
-
 
 @app.route("/")
 def index():
@@ -92,7 +91,6 @@ def start_scheduler():
 # -------------------------------------------------
 
 async def run_telegram_async():
-    """Runs PTB 20+ asynchronous Telegram bot."""
     logger.info("Initializing Telegram bot...")
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -110,38 +108,36 @@ def start_telegram_thread():
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-
     logger.info("Telegram background thread started.")
 
 
 # -------------------------------------------------
-# Flask 3.x / Gunicorn Startup Hook
+# START BACKGROUND SERVICES IMMEDIATELY ON IMPORT
 # -------------------------------------------------
 
-@app.before_app_serving
-def init_services():
-    """
-    Correct startup hook for Flask 3.x.
-    Runs once per Gunicorn worker.
-    """
+def start_background_services():
+    logger.info("Starting background services (scheduler + Telegram bot)...")
 
-    logger.info("Flask worker starting services (scheduler + Telegram bot)...")
-
-    # Start scheduler in background
+    # Start scheduler
     threading.Thread(target=start_scheduler, daemon=True).start()
 
-    # Start Telegram bot in background
+    # Start Telegram bot
     start_telegram_thread()
 
-    logger.info("Background services started successfully.")
+
+# IMPORTANT: Start services NOW (Gunicorn imports main.py once per worker)
+start_background_services()
 
 
 # -------------------------------------------------
-# Local Dev Mode
+# Local Development Mode
 # -------------------------------------------------
 
 if __name__ == "__main__":
+    # Start scheduler
     threading.Thread(target=start_scheduler, daemon=True).start()
+
+    # Start Telegram bot
     start_telegram_thread()
 
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
