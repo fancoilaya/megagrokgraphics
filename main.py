@@ -1,43 +1,42 @@
-# main.py — MegaGrok Graphics Bot (Render Background Worker)
+# main.py — MegaGrok Graphics Bot (Webhook Mode for Render)
 # ------------------------------------------------------------
 # Features:
-# - Async PTB20 Telegram bot running in separate thread
-# - APScheduler auto-poster (every X hours)
-# - Flask root endpoint for Render health checks
-# - Modular command loading (handlers/commands.py)
-# - Stability/OpenAI image generation handled by handlers/posting.py
+# - Telegram webhook (PTB20) served through Flask
+# - APScheduler for auto-poster
+# - Stability image generation (services/stability_client.py)
+# - Modular command handlers
 # ------------------------------------------------------------
 
 import os
-import threading
-import asyncio
 import logging
+import threading
 from datetime import datetime
 
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Telegram async app builder (PTB v20+)
-from telegram.ext import ApplicationBuilder
+from telegram import Update
+from telegram.ext import Application, ApplicationBuilder
 
-# Local handlers
 from handlers.commands import get_handlers
 from handlers.posting import generate_and_post
 
 
 # -------------------------------------------------
-# Environment Variables
+# Env Vars
 # -------------------------------------------------
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POST_INTERVAL_HOURS = float(os.getenv("POST_INTERVAL_HOURS", "2"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://yourapp.onrender.com/webhook
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ Missing TELEGRAM_BOT_TOKEN")
-
+    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 if not CHAT_ID:
-    raise RuntimeError("❌ Missing TELEGRAM_CHAT_ID")
+    raise RuntimeError("Missing TELEGRAM_CHAT_ID")
+if not WEBHOOK_URL:
+    raise RuntimeError("Missing WEBHOOK_URL")
 
 
 # -------------------------------------------------
@@ -52,7 +51,7 @@ log = logging.getLogger("megagrok-main")
 
 
 # -------------------------------------------------
-# Flask App (Render health endpoint)
+# Flask App (webhook receiver + health endpoint)
 # -------------------------------------------------
 
 app = Flask("megagrok_graphics_bot")
@@ -61,93 +60,87 @@ app = Flask("megagrok_graphics_bot")
 def index():
     return jsonify({
         "status": "ok",
-        "service": "MegaGrok Graphics Bot",
+        "bot": "MegaGrok Graphics Bot",
         "time": datetime.utcnow().isoformat() + "Z"
     })
 
 
 # -------------------------------------------------
-# APScheduler Auto Poster
+# Telegram Bot Application (PTB20)
+# -------------------------------------------------
+
+# Create PTB Application once
+app_tg: Application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# Register handlers
+for h in get_handlers():
+    app_tg.add_handler(h)
+
+
+# -------------------------------------------------
+# Webhook endpoint
+# -------------------------------------------------
+
+@app.post("/webhook")
+def webhook():
+    """Receives Telegram updates via webhook."""
+    data = request.get_json(force=True)
+    update = Update.de_json(data, app_tg.bot)
+    app_tg.create_task(app_tg.process_update(update))
+    return "OK", 200
+
+
+# -------------------------------------------------
+# Scheduler (Auto Poster)
 # -------------------------------------------------
 
 def scheduler_job():
-    """Run one scheduled poster generation + Telegram post."""
     log.info("🪄 Running scheduled MegaGrok poster...")
-    ok, info = generate_and_post(CHAT_ID, POST_INTERVAL_HOURS)
+    ok, info, img = generate_and_post(CHAT_ID, POST_INTERVAL_HOURS)
 
     if ok:
-        log.info(f"✅ Posted successfully: {info}")
+        # Using the PTB async method inside sync scheduler: use create_task
+        app_tg.create_task(
+            app_tg.bot.send_photo(chat_id=CHAT_ID, photo=img, caption=info)
+        )
+        log.info(f"Posted: {info}")
     else:
-        log.error(f"❌ Failed: {info}")
+        log.error(f"Failed: {info}")
 
 
 def start_scheduler():
-    """Start the repeating scheduler in a background thread."""
     sched = BackgroundScheduler(timezone="UTC")
     sched.add_job(scheduler_job, "interval", hours=POST_INTERVAL_HOURS)
-
     sched.start()
     log.info(f"⏱ Scheduler started (every {POST_INTERVAL_HOURS} hours)")
 
-    # Initial poster on startup
+    # Initial post on startup
     try:
         scheduler_job()
     except Exception as e:
-        log.exception(f"⚠ Initial scheduled job failed: {e}")
+        log.exception(f"Initial scheduled job failed: {e}")
 
 
 # -------------------------------------------------
-# Telegram Async Bot Thread
+# Startup sequence
 # -------------------------------------------------
 
-async def run_telegram_async():
-    """Run PTB telegram polling inside asyncio."""
-    log.info("🤖 Initializing Telegram bot...")
+def on_startup():
+    log.info("🚀 MegaGrok Graphics Bot starting (WEBHOOK MODE)")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Load commands dynamically
-    for handler in get_handlers():
-        app.add_handler(handler)
-
-    log.info("📡 Starting Telegram polling...")
-    await app.run_polling(drop_pending_updates=True)
-
-
-def start_telegram_thread():
-    """Launch Telegram polling in a dedicated thread."""
-    def runner():
-        asyncio.run(run_telegram_async())
-
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
-    log.info("🧵 Telegram polling thread started.")
-
-
-# -------------------------------------------------
-# START ALL BACKGROUND SERVICES NOW
-# -------------------------------------------------
-
-def start_background_services():
-    log.info("🚀 Starting MegaGrok Graphics Bot background services...")
-
-    # Scheduler thread
+    # Start Scheduler in background thread
     threading.Thread(target=start_scheduler, daemon=True).start()
 
-    # Telegram thread
-    start_telegram_thread()
+    # Set webhook
+    log.info(f"🔗 Setting webhook → {WEBHOOK_URL}/webhook")
+    app_tg.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
 
-
-# IMPORTANT:
-# Gunicorn imports this file exactly once on startup — so we must start services NOW.
-start_background_services()
+on_startup()
 
 
 # -------------------------------------------------
-# Local debug mode (not used on Render)
+# Flask server run (Render handles Gunicorn)
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    start_scheduler()
-    start_telegram_thread()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
