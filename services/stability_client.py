@@ -11,12 +11,12 @@ STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 if not STABILITY_API_KEY:
     raise RuntimeError("STABILITY_API_KEY not set")
 
-STABILITY_URL = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
-
+# 🔥 The correct JSON-based SD3 endpoint
+STABILITY_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
 def generate_megagrok_image(prompt: str) -> bytes:
     """
-    Calls Stability SD3 API properly.
+    Calls Stability SD3 CORE API (JSON, not multipart).
     Returns raw PNG bytes.
     """
 
@@ -28,8 +28,8 @@ def generate_megagrok_image(prompt: str) -> bytes:
 
     payload = {
         "prompt": prompt,
-        "output_format": "png",   # stability returns base64 png
         "mode": "text-to-image",
+        "output_format": "png",
         "aspect_ratio": "1:1"
     }
 
@@ -42,9 +42,14 @@ def generate_megagrok_image(prompt: str) -> bytes:
 
     try:
         data = resp.json()
-        b64_img = data["image"]  # stability returns: {"image": "<base64>"}
+
+        # stability returns:  {"image": "<base64 string>"}
+        b64_img = data.get("image")
+        if not b64_img:
+            raise RuntimeError(f"Missing image field: {resp.text}")
+
         return base64.b64decode(b64_img)
 
     except Exception as e:
-        log.exception("Failed decoding Stability response")
+        log.exception("Failed decoding Stability core response")
         raise RuntimeError(f"Invalid Stability response: {resp.text}")
