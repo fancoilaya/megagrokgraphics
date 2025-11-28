@@ -5,48 +5,52 @@ import base64
 import requests
 
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
-
 if not STABILITY_API_KEY:
     raise RuntimeError("Missing STABILITY_API_KEY")
 
-
-API_URL = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+API_URL = os.getenv(
+    "STABILITY_API_URL",
+    # Ultra model default endpoint
+    "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+)
 
 HEADERS = {
     "Authorization": f"Bearer {STABILITY_API_KEY}",
+    # MUST request an image type:
+    "Accept": "image/png",
+    # DO NOT set Content-Type manually (requests handles multipart properly)
 }
-
 
 def generate_megagrok_image(prompt: str) -> bytes:
     """
-    Correct Stability request:
-    - multipart/form-data
-    - 'prompt' must be in data fields
-    - NO bogus file field
+    Stability Ultra — return raw PNG bytes.
     """
 
+    # Required form fields
     data = {
         "prompt": prompt,
-        "output_format": "png",
         "aspect_ratio": "1:1",
+        "output_format": "png",
     }
 
-    # Proper multipart request WITHOUT a dummy file
-    response = requests.post(
+    # Ultra requires at least one valid "files" part for multipart,
+    # but you can send an empty placeholder.
+    files = {
+        "none": ("", b"", "application/octet-stream")
+    }
+
+    resp = requests.post(
         API_URL,
         headers=HEADERS,
         data=data,
+        files=files,
         timeout=120
     )
 
-    if response.status_code != 200:
+    if resp.status_code != 200:
         raise RuntimeError(
-            f"Stability API error {response.status_code}: {response.text}"
+            f"Stability API error {resp.status_code}: {resp.text}"
         )
 
-    j = response.json()
-
-    if "image" not in j:
-        raise RuntimeError("Stability API returned no image data")
-
-    return base64.b64decode(j["image"])
+    # Ultra endpoint returns raw PNG bytes directly (NOT JSON!)
+    return resp.content
