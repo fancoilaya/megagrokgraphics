@@ -118,14 +118,14 @@ def start_telegram_thread():
 
 
 # -------------------------------------------------
-# Gunicorn-Compatible Initialization
+# Gunicorn-Compatible Initialization (Flask 3.x)
 # -------------------------------------------------
 
-@app.before_first_request
+@app.before_serving
 def init_services():
     """
-    Gunicorn does NOT run `if __name__ == '__main__'`,
-    so we start all background services here.
+    Flask 3.x replacement for before_first_request.
+    Runs once per Gunicorn worker.
     """
 
     logger.info("Flask worker is starting background services...")
@@ -140,7 +140,7 @@ def init_services():
 
 
 # -------------------------------------------------
-# Local Development Mode
+# Local Development Mode (python main.py)
 # -------------------------------------------------
 
 if __name__ == "__main__":
@@ -150,5 +150,5 @@ if __name__ == "__main__":
     # Start Telegram bot
     start_telegram_thread()
 
-    # Run Flask server
+    # Start Flask dev server
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
